@@ -18,10 +18,6 @@ def fetch_data(url: str, params: dict):
         return soup
 
 
-async def trigger_send_message(messages):
-    await send_messages(messages)
-
-
 def main():
 
     start = time.perf_counter()
@@ -44,7 +40,7 @@ def main():
         results[rating] = parse_data(soup)
 
     messages = format_messages(results)
-    asyncio.run(trigger_send_message(messages))
+    asyncio.run(send_messages(messages))
     end = time.perf_counter()
     logging.info(f"Process finished in {(end - start):.2f}s")
 
