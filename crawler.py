@@ -1,27 +1,35 @@
-from requests import Session, Response
-from urllib.parse import urlencode
+from urllib3.util.retry import Retry
+import requests
+from requests.adapters import HTTPAdapter
 from logger import setup_logger
 import random
-import json
-import time
 
 
 class SteamInfoCrawler:
-    retry_attempts = 0
 
     def __init__(self):
-        self._set_requests()
+        self.session = self._set_session()
+        self._set_header()
         self.logger = setup_logger(__name__)
 
-    def _set_requests(self):
-        self.requests = Session()
-        self._set_header()
+    def _set_session(self):
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=30,
+            backoff_factor=0.1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "PUT", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.requests.close()
+        self.session.close()
 
     def _set_header(self):
         user_agents = [
@@ -41,47 +49,27 @@ class SteamInfoCrawler:
             "Upgrade-Insecure-Requests": "1",
             "Cache-Control": "max-age=0",
         }
-        self.requests.headers.update(headers)
+        self.session.headers.update(headers)
 
-    def make_requests(self, request_type: str, endpoint: str, body: dict = {}) -> Response:
-        sleep_time = random.uniform(
-            0.1 * self.retry_attempts,
-            0.2 * self.retry_attempts)
-        time.sleep(sleep_time)
+    def make_requests(self, request_type: str, endpoint: str, body: dict = {}) -> requests.Response:
         self.logger.info(
-            f"Making {request_type} request to {endpoint} with body {body}")
+            f"Making {request_type} request to {endpoint} with body(params) {body}")
+        response = None
         if request_type == 'POST':
-            resp = self.requests.post(
-                endpoint, data=json.dumps(body),
-                headers=self.requests.headers)
+            response = self.session.post(endpoint, json=body)
         elif request_type == 'PUT':
-            resp = self.requests.put(
-                endpoint, data=json.dumps(body),
-                headers=self.requests.headers)
+            response = self.session.put(endpoint, json=body)
         elif request_type == 'GET':
-            resp = self.requests.get(
-                endpoint, headers=self.requests.headers, params=body)
+            response = self.session.get(endpoint, params=body)
 
-        if resp.status_code in [429, 502, 504, 500, 244]:
-            self.logger.warning("Too many requests error occured. Cooling down")
-            time.sleep(random.uniform(1, 2))
-            if self.retry_attempts < 30:
-                self.retry_attempts += 1
-                return self.make_requests(request_type, endpoint, body)
-
-        if resp.status_code != 200:
+        if response is None:
             self.logger.error(
-                f"Error making request with status_code {resp.status_code} with response content {resp.text}")
-            try:
-                resp_obj: dict = resp.json()
-                if resp.status_code == 400 or \
-                        resp_obj.get('message') == 'cookie not found':
-                    self._set_requests()
-                    self.logger.info(
-                        f"Rerun {request_type} request to {endpoint} with body {body}")
-                    return self.make_requests(request_type, endpoint, body)
-            except json.JSONDecodeError:
-                self.logger.error(f"Error making request with status_code")
+                f"Error making {request_type} request to {endpoint} with body {body}")
+        elif response.status_code != 200:
+            self.logger.error(
+                f"Error making {request_type} request to {endpoint} with body {body} and status code {response.status_code}")
+            response.raise_for_status()
+
         self.logger.info(
-            f"Finished making {request_type} request to {endpoint} with body {body}, request took {resp.elapsed.total_seconds()}")
-        return resp
+            f"Finished making {request_type} request to {endpoint} with body {body}, request took {response.elapsed.total_seconds()}")
+        return response
